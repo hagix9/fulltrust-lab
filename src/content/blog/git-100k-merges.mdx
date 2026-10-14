@@ -1,0 +1,295 @@
+---
+title: 'AnthropicはGitを捨てた。個人がAIで1日3万回mergeしてもGitは耐えられるのか？'
+description: '個人開発者がAIエージェントで1日30,000回mergeするようになった場合、今のGitで耐えられるのか。普通のGit repositoryに実際に100,000個のmerge commitを作って検証した記録。'
+pubDate: '2026-10-15'
+ogImage: '/article/git-100k-merges/og.png'
+---
+
+import ResultPanel from '../../components/ResultPanel.astro';
+
+## きっかけ
+
+Anthropic が自社の monorepo を Git から独自バージョン管理システム **Scion** へ移行したという記事を見ました。
+
+同社のエンジニアリングブログ [Redesigning source control at Anthropic](https://www.anthropic.com/engineering/redesigning-source-control) によると、報告されている規模はこうです。
+
+- merges/day が 2026年5月の約2,500から、9月には **30,000+** に増加
+- main branch の履歴だけで **約100GB** (compressed working copy は25GB超)
+- CI の code checkout が **約25 million/day** (素直に fetch すれば600PB超/day 相当)
+- Scion は7人のチームが約5ヶ月で構築し、monorepo の移行を完了
+
+Anthropic は「1日3万回 merge するから Git が使えない」と言ったわけではありません。履歴サイズ・CI の checkout 量・並列性・開発規模を全部ひっくるめた要求に対して、既存の Git では不十分だと判断した、というのが一次情報の内容です。
+
+ここで個人開発者として気になるのは、別の問いです。
+
+> **個人が AI エージェントを大量に使って、毎日3万回 merge するような開発を始めたとして、今の Git で耐えられるのか？**
+
+Anthropic の環境 (~100GB の履歴、高並行、1日2,500万回の CI checkout) と、個人の手元の repository は別次元です。とはいえ「1日3万 merge」という数字自体がどの程度の負荷なのか、実際に merge を作りまくって試せば分かるはずです。
+
+というわけで、普通の Git repository (ソースコードと変更履歴を管理する場所) に、実際に **100,000個の merge commit** を作って計測しました。merge は「別の開発作業で行った変更を取り込む操作」、commit は「変更履歴の記録」です。
+
+## 結局どうだった？
+
+専門知識がなくても30秒で分かる要約です。
+
+- 普通の Git で **10万回の実 merge に成功**しました (30万回・90万回は今回は試していません)
+- 今回の条件では、merge を繰り返しても **merge 処理そのものは継続的に遅くなりませんでした**
+- 1日3万回 merge は、24時間均等にばらつかせれば **約2.9秒に1回**。今回の merge 生成速度 (純粋生成で平均約14.4 merges/s = 約0.07秒に1回) は、その要求を **処理速度の面では十分上回っていました**
+- ただし Git の自動メンテナンス (`git gc`) を無効化して内部データを溜め込んだ条件では、**履歴を調べる操作が極端に遅くなりました**
+- 自動メンテナンスを有効にしたままの長期運用は **未検証**
+- 複数の AI エージェントが同時に作業する並列開発も **未検証**
+
+暫定結論としてはこうです。
+
+> **今回のような小規模・逐次実行なら、個人が1日3万回 merge するために Git を捨てる必要があるとは考えにくい。ただし、長期運用や並列開発まで保証できる実験ではない。**
+
+## 1日3万回ってどのくらいの量？
+
+「30,000 merges/day」を感覚に落とすとこうなります。
+
+| 期間 | merge数 |
+|---|---:|
+| 1日 | 30,000 |
+| 7日 | 210,000 |
+| 30日 | 900,000 |
+
+1日 (86,400秒) に30,000回なら、平均で **約0.347 merges/s**、つまり **約2.88秒に1回** のペースです。
+
+対して今回の実験で merge commit を生成し続けた速度は、純粋な生成時間ベースで **平均約14.4 merges/s** (100,000 merges を6,947秒)。要求ペースの **約41倍** の処理能力があった計算です。
+
+ただし注意点があります。この約14.4 merges/s は checkpoint 計測や GC などの運用上の時間を含まない、純粋な生成時間だけの値です。「実運用で持続的に14.4 merges/s 出せる」ことを証明したものではありません。言えるのは「**今回の条件では処理速度に余裕が見られた**」までです。
+
+そしてもう一つ大事な点: 今回実測したのは **累計10万 merge まで** です。1週間分 (21万) や1ヶ月分 (90万) を作ったわけではありません。
+
+## 結果の要約
+
+測定データの要約です。
+
+- **100,000 merges を完走**。総 commit 数は 200,001、最終状態で `git fsck` (repository の整合性チェック) は clean
+- merge 生成自体は **median 59.3ms** で推移。先頭10,000件の median は 59.6ms、末尾10,000件は 58.5ms で、**少なくともこの実験条件では merge 生成の継続的な性能劣化は確認できなかった**
+- 一方、**gc を一度もしない未GC状態** (約50万 loose objects) では history 走査系が猛烈に遅くなった: `git log` 51.58s、`git rev-list --all --count` 48.07s、`git fsck` 282.1s
+- その状態で `git status` は **5.8ms**、`git branch` は 4.8ms のまま。**Git全体が遅くなったわけではない**
+- `git gc` 一回で `rev-list` は **48.1s → 47.2ms (約1,018倍)** に回復。repo は 約2,488MB → 約279MB
+
+<ResultPanel />
+
+以降は方法とデータを詳しく書きます。
+
+## 実験方法
+
+隔離した一時ディレクトリに新規 repository を作り、remote は設定していません。256個の payload ファイルを置いた初期 commit のあと、各イテレーションで以下を実行しました。
+
+```
+git switch -c exp        # topic branch を作成
+# data/blob_{i mod 256}.txt を sha256(seed-i) 由来の一意な内容に書き換え
+git commit -am "..."     # non-empty commit
+git switch main
+git merge --no-ff -m "..." exp   # merge commit を必ず生成
+git branch -d exp        # branch 削除
+```
+
+**これを100,000回です。** empty commit を量産しただけではありません。毎回 branch を切り、実ファイルを変更して commit し、`--no-ff` で merge commit を作り、branch を消すという実操作です。topic branch は merge ごとに削除するので `refs/heads` には常に `main` のみ残ります。
+
+変更内容は seed 固定の `sha256(seed-i)` 由来で、イテレーションごとに一意かつ決定論的です。256個のファイルを巡回して全置換する構造にしたのは、merge base 以降 main 側がそのファイルを触らないため **conflict が原理的に発生しない** ようにするためです (conflict 解決コストは今回の測定対象外)。
+
+重要な条件として **`gc.auto=0`** を設定しています。`git gc` は Git 内部のデータ整理やオブジェクトの圧縮・最適化などを行うメンテナンス処理で、普段は自動で回ります。これを止めたので、loose object (Git が個別のオブジェクトとして保存している内部データ。まだ pack 化されていないだけで、不要なデータという意味ではありません) が実験中ずっと溜まり続けます。通常運用より意図的に厳しい、「loose objects を溜め込む worst-case 寄り条件」です。`git gc` の効果は実験 repo とは別の APFS clonefile コピー上で測定しました (実験条件を壊さないため)。
+
+merge 数や commit 数は内部カウンタではなく `git rev-list --all --count (--merges)` で再集計しています。生成・計測は Python driver から実際の git porcelain コマンドを呼ぶ形で、実行した git コマンドは全件ログに残しました (500,352行)。
+
+## 実験環境
+
+| 項目 | 値 |
+|---|---|
+| 機材 | MacBook Air (macOS 26.6.2 / Darwin 25.6.0) |
+| CPU | Apple M3, 8 cores |
+| メモリ | 24 GiB |
+| ストレージ | 外付け SSD, APFS |
+| Git | 2.50.1 |
+| 実験日 | 2026-10-14 (UTC) |
+
+## 30,000 merges まで
+
+まず「1日分」に相当する30,000 merges です。純粋生成で **約41分**、checkpoint 計測込みの wall-clock で約44分で到達しました。
+
+この時点で repo は約730MB、loose objects は 150,259個。操作 latency はこのようになります (各5回の median)。
+
+| op | 1,000 merges | 30,000 merges |
+|---|---:|---:|
+| `git status` | 6.2ms | 8.5ms |
+| `git branch` | 5.6ms | 5.3ms |
+| `git merge-base` | 5.7ms | 5.8ms |
+| `git log` | 59ms | 14.16s |
+| `git rev-list --all --count` | 48ms | 13.76s |
+| `git fsck` | 0.7s | 48.4s |
+
+つまりこういうことです。**現在のファイル状態を確認する操作や、branch 間の共通祖先を探す操作は数ミリ秒のまま速い**のに、**履歴全体をたどる系の操作だけが急激に遅くなっている**。20k→30k では `git log` が 1.8s→14.2s と跳んでいて、loose object の増加と相関した非線形の悪化が観測されました (どの要因が支配的かは本実験では分離していません)。
+
+## 100,000 merges まで
+
+そのまま継続し、**100,000 merges に到達**しました。純粋生成時間は合計 **約1時間56分** (6,947秒)、checkpoint 計測を含む wall-clock は約2時間51分です。
+
+最終状態:
+
+- commits: **200,001** (init 1 + topic 100,000 + merge 100,000)
+- merge commits: **100,000** (全て2-parent を確認)
+- loose objects: **500,259**
+- repo 総量: **約2.43GB**
+
+per-merge 所要時間の分布 (n=100,000):
+
+| 指標 | 値 |
+|---|---:|
+| median | 59.3ms |
+| mean | 67.6ms |
+| p95 | 99.0ms |
+| p99 | 164.0ms |
+| max | 941ms |
+| 先頭10,000件 median | 59.6ms |
+| 末尾10,000件 median | 58.5ms |
+
+![per-merge wall time](/article/git-100k-merges/fig3-per-merge-time.svg)
+
+つまり、**今回の環境では merge 処理そのものは1回あたり数十ミリ秒程度で、履歴が10万 merge まで増えても継続的に遅くなる現象は確認できませんでした**。先頭と末尾で median はほぼ同等です。window ごとの生成速度も 10〜17 merges/s の範囲で推移し、後半がむしろ速い checkpoint もありました。
+
+## しかしGitが急に重くなる
+
+ここがこの実験の見せ場です。100,000 merges、未GC・約50万 loose objects の状態での各操作 (median of 5):
+
+| op | latency |
+|---|---:|
+| `git status` | **5.8ms** |
+| `git branch` | **4.8ms** |
+| `git merge-base HEAD^1 HEAD^2` | **5.3ms** |
+| `git log` | **51.58秒** |
+| `git log --oneline` | **51.50秒** |
+| `git rev-list --all --count` | **48.07秒** |
+| `git fsck` | **282.1秒** (clean、rc=0) |
+
+![merge数と操作latency](/article/git-100k-merges/fig1-latency-vs-merges.svg)
+
+同じ repository で `git status` は6ms、`git log` は52秒です。平たく言うと、**「今どのファイルが変更されているか見る」のは一瞬なのに、「過去の変更履歴を一覧する」のに1分近くかかる**状態です。**「Git全部が遅くなった」のではなく、history traversal (過去の変更履歴をたどる処理) だけが未GC状態で極端に遅くなっている**という非対称がはっきり出ました。
+
+checkpoint ごとの全データはこのようになっています。
+
+| merges | repo | loose objs | status | log | rev-list | fsck |
+|---:|---:|---:|---:|---:|---:|---:|
+| 100 | 5MB | 759 | 6.7ms | 0.01s | 0.01s | 0.1s |
+| 1,000 | 26MB | 5,259 | 6.2ms | 0.06s | 0.05s | 0.7s |
+| 5,000 | 124MB | 25,259 | 10.5ms | 0.33s | 0.23s | 3.6s |
+| 10,000 | 245MB | 50,259 | 7.1ms | 0.56s | 0.49s | 7.2s |
+| 20,000 | 488MB | 100,259 | 10.9ms | 1.80s | 1.21s | 20.0s |
+| 30,000 | 730MB | 150,259 | 8.5ms | 14.16s | 13.76s | 48.4s |
+| 50,000 | 1.2GB | 250,259 | 5.9ms | 26.81s | 25.27s | 120.5s |
+| 75,000 | 1.8GB | 375,259 | 5.5ms | 39.04s | 36.28s | 197.0s |
+| 100,000 | 2.4GB | 500,259 | 5.8ms | 51.58s | 48.07s | 282.1s |
+
+## git gc 一回でほぼ戻る
+
+100,000 merges の状態のコピーに `git gc` を実行しました (909秒、約15分)。
+
+| op | gc 前 | gc 後 | 倍率 |
+|---|---:|---:|---:|
+| `git rev-list --all --count` | 48,074ms | **47.2ms** | **約1,018x** |
+| `git log` | 51,580ms | 1,036ms | 約50x |
+| `git log --oneline` | 51,495ms | 858ms | 約60x |
+| `git fsck` | 282,110ms | 7,754ms | 約36x |
+| repo size | 約2,488MB | 約279MB | 約8.9x縮小 |
+| `git status` | 5.8ms | 6.1ms | 約1x |
+
+![gc前後の比較](/article/git-100k-merges/fig2-gc-before-after.svg)
+
+つまり、**Git の内部データを整理したら、履歴を走査して commit 数を数える処理が48秒から47ミリ秒に戻った**、ということです。`rev-list` は約1,018倍。ただし、ここで **「遅かった原因は loose object の I/O だった」と断定はしません**。`git gc` は loose object の pack 化だけでなく commit-graph の生成など複数の最適化を同時に行い、OS のキャッシュ状態も変わります。今回の実験ではこれらの要因を分離していません。
+
+今回の観測として言えるのはここまでです。
+
+> 最初の顕著なボトルネックは merge 数そのものではなく、**大量の loose object を保持した未GC状態を含む repository object storage / history traversal 側に現れた**。そして `git gc` 一回で走査系操作は大幅に回復した。
+
+ついでに言うと、gc 自体も軽くありません。この規模まで溜め込むと `git gc` に15分かかります。実運用では auto-gc が逐次回るのでここまで溜まらないはずですが、「溜め込むと一気に払う」という意味では大きいコストです。
+
+## checkout / read の補助測定
+
+merge 数だけが問題とは限らないので、checkout (特定の commit や branch の状態を作業ディレクトリへ反映する操作) / read 側も安全な範囲で見ました (100k merges・未GC状態の repo に対して)。
+
+| 測定 | 条件 | 結果 |
+|---|---|---:|
+| `git switch` ×1,000 | main ↔ 別branch、**同一tree** | 154 ops/s, median 6.3ms |
+| worktree `checkout --detach` ×40 | **同一commit** への detach | median 7.0ms |
+| 4 linked worktree 並列 `git log -n 100` ×1,000 | read-heavy | 20.1 ops/s, median 199ms |
+
+同一 tree 間の切替や同一 commit への checkout では大きな遅延は観測されませんでした。ただし**大量の tree 差分を伴う実運用の checkout は測定していません**。この結果を「100k merges でも checkout は実用的」と一般化はしません。
+
+## Anthropic の話に戻る
+
+ここで冒頭の問いに戻ります。Anthropic が Scion を作ったのは「3万 merges/day」という数字単独が原因ではありません。一次情報が挙げる要求は、**約100GBの履歴、高並行の開発、1日2,500万回の CI checkout、分散した大規模開発環境** の組み合わせです。merge 回数はその中の一つの指標にすぎません。
+
+この実験から分かったのは、せいぜいここまでです。
+
+- 「30,000 merges/day」という数字だけを見て「Gitは3万mergeで限界」と解釈するのは適切ではない
+- 普通の repo に実際に10万 merge を作った程度では、merge 生成・status・branch・merge-base・switch のような操作はこの条件では普通に使えた
+- ただし未GC・大量 loose object 状態では history traversal が大きく悪化し、gc で大幅に回復した
+
+つまり、**Anthropic にとって Git では厳しくても、個人の AI 開発者が同じ問題に直面するとは限らない**。彼らの ~100GB monorepo と今回の ~2.5GB repo では桁が違い、高並行・CI 負荷も再現していません。この実験から Anthropic の判断を否定できるわけではありませんし、Scion 移行が正しかったかどうかもここからは言えません。
+
+## 実用的なまとめ
+
+「自分の開発には Git で足りるか？」をこの実験の範囲で整理すると、こうなります。
+
+| 状況 | 今回の実験から言えること |
+|---|---|
+| 小規模 repo で3万回 merge | **実際に達成できた** |
+| 小規模 repo で10万回 merge | **実際に達成できた** |
+| 1日3万回を継続 | 速度面では可能性が高いが、持続運用は **未検証** |
+| 1週間で21万回 | **未検証** |
+| 1か月で90万回 | **未検証** |
+| 複数AIによる並列 merge | **未検証** |
+| 通常の auto-gc 有効で長期運用 | **未検証** |
+| Anthropic 級の巨大 monorepo | 今回の実験からは **判断できない** |
+
+## 結論
+
+個人が AI エージェントを使って1日3万回 merge する未来が来ても、**今回の実験を見る限り、merge 回数だけを理由に Git を捨てる必要はなさそうだ**、というのが暫定的な答えです。merge 生成は終始数十ミリ秒で、要求ペース (2.88秒に1回) を大きく上回っていました。
+
+ただし、「本当に毎日それを続けられるか」「複数のエージェントが同時に操作しても問題ないか」は別の検証が必要です。今回の未GC環境で見えた history traversal の悪化も、auto-gc が有効な通常運用で同じように現れるかは分かっていません。
+
+次にやるとしたら、例えばこういう実験です。
+
+- **auto-gc 有効のまま長期継続** して、実運用に近い条件で履歴走査が悪化するか見る
+- **累計21万〜90万 merge** まで伸ばして、1週間〜1ヶ月分に相当する規模を検証する
+- **複数ワーカー相当の並列実行** で ref 更新競合や lock の影響を測る
+- **実際にファイル差分を伴う checkout** を測定する
+
+いずれも今回は実行していません。
+
+## Limitations
+
+この実験の限界を明記します。
+
+- synthetic benchmark。逐次・単一 worker で、実環境の並行 merge や ref 更新競合は測定していない
+- conflict なし、merge は全て線形の 2-parent
+- repo は約2.5GB・256 files。Anthropic の約100GB monorepo とは桁が違う
+- topic branch は即削除するため refs は増えない
+- CI の 25M checkout/day は再現していない
+- `gc.auto=0` で loose object を意図的に溜めた worst-case 寄り条件
+- checkout 測定は同一tree/同一commit 中心
+- gc 改善の要因 (pack化・commit-graph・cache等) を分離していない
+- 測定は全て wall-clock。厳密な cold cache 測定ではない
+
+## 再現性
+
+実験は以下の流れで再実行できます (隔離した一時ディレクトリで行い、remote は設定しないでください)。
+
+```bash
+EXP="/path/to/git-merge-lab"
+$EXP/scripts/env_record.sh "$EXP"
+$EXP/scripts/setup_repo.sh "$EXP"
+python3 $EXP/scripts/generate.py --until 100000 \
+    --checkpoints 100,1000,5000,10000,20000,30000,50000,75000,100000
+python3 $EXP/scripts/stress_checkout.py
+python3 $EXP/scripts/post_gc_bench.py
+```
+
+payload は固定 seed の `sha256(seed-i)` で決定論的に生成されるため、同じ手順で同じ内容の履歴が作れます。計測値自体は環境依存です。
+
+---
+
+*この記事の数値は全て実験の生データ (checkpoint ごとの benchmark 記録、100,000件の per-merge 所要時間、gc前後の比較) から取っています。*

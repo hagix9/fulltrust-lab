@@ -14,6 +14,8 @@ const blog = defineCollection({
 			pubDate: z.coerce.date(),
 			updatedDate: z.coerce.date().optional(),
 			heroImage: z.optional(image()),
+			// SNS share image served from /public (not rendered in the article body)
+			ogImage: z.string().optional(),
 		}),
 });
 

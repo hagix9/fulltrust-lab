@@ -1,0 +1,96 @@
+---
+// Static result summary panel for the git-100k-merges experiment.
+// All figures are measured values from tmp/git-merge-lab/results/.
+// live-panel-skill was evaluated and rejected for this article
+// (see post). This panel intentionally contains no animation.
+---
+
+<aside class="result-panel" aria-label="実験結果サマリー">
+	<div class="rp-grid">
+		<div class="rp-item">
+			<div class="rp-value">100,000</div>
+			<div class="rp-label">merge commits</div>
+		</div>
+		<div class="rp-item">
+			<div class="rp-value">200,001</div>
+			<div class="rp-label">total commits</div>
+		</div>
+		<div class="rp-item">
+			<div class="rp-value">59.3<span class="rp-unit">ms</span></div>
+			<div class="rp-label">median time / merge</div>
+		</div>
+		<div class="rp-item">
+			<div class="rp-value">5.8<span class="rp-unit">ms</span></div>
+			<div class="rp-label">git status @100k</div>
+		</div>
+		<div class="rp-item">
+			<div class="rp-value">
+				2.49<span class="rp-unit">GB</span>
+				<span class="rp-arrow">→</span>
+				279<span class="rp-unit">MB</span>
+			</div>
+			<div class="rp-label">repo size (before → after gc)</div>
+		</div>
+		<div class="rp-item">
+			<div class="rp-value">
+				48.1<span class="rp-unit">s</span>
+				<span class="rp-arrow">→</span>
+				47.2<span class="rp-unit">ms</span>
+			</div>
+			<div class="rp-label">git rev-list (before → after gc) ≈1,018x</div>
+		</div>
+	</div>
+	<p class="rp-note">
+		All values measured on the experiment repository. Details and raw data below.
+	</p>
+</aside>
+
+<style>
+	.result-panel {
+		border: 1px solid rgb(var(--gray-light));
+		border-radius: 10px;
+		background: #fbfcfe;
+		padding: 1.2em 1.4em;
+		margin: 1.5em 0;
+	}
+	.rp-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+		gap: 1em;
+	}
+	.rp-item {
+		background: #fff;
+		border: 1px solid rgb(var(--gray-light));
+		border-radius: 8px;
+		padding: 0.7em 0.9em;
+	}
+	.rp-value {
+		font-size: 1.35em;
+		font-weight: 700;
+		color: rgb(var(--black));
+		font-variant-numeric: tabular-nums;
+		line-height: 1.2;
+	}
+	.rp-unit {
+		font-size: 0.55em;
+		font-weight: 400;
+		color: rgb(var(--gray));
+		margin-left: 2px;
+	}
+	.rp-arrow {
+		color: rgb(var(--gray));
+		font-weight: 400;
+		margin: 0 0.15em;
+	}
+	.rp-label {
+		font-size: 0.7em;
+		color: rgb(var(--gray));
+		margin-top: 0.3em;
+		line-height: 1.3;
+	}
+	.rp-note {
+		font-size: 0.7em;
+		color: rgb(var(--gray));
+		margin: 0.9em 0 0 0;
+	}
+</style>
